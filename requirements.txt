@@ -1,3 +1,6 @@
-flask
+fastapi
+uvicorn[standard]
 stripe
-flask-cors
+python-dotenv
+aiofiles
+python-multipart
