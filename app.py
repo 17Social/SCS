@@ -3,41 +3,35 @@ import stripe
 import os
 
 app = Flask(__name__)
+
+# ✅ Set your secret key from Railway environment variables
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-# Map product SKUs to Stripe Price IDs
-PRICE_MAP = {
-    "starter": "price_123_starter",    # replace with actual Stripe price ID
-    "pro": "price_456_pro",            # replace with actual Stripe price ID
-    "premium": "price_789_premium"     # replace with actual Stripe price ID
-}
-
-@app.route("/create-checkout-session", methods=["POST"])
+# ✅ This is the correct endpoint your frontend and Bolt are calling
+@app.route("/api/create-checkout-session", methods=["POST"])
 def create_checkout_session():
     data = request.get_json()
-    product_key = data.get("product")
+    price_id = data.get("priceId")
 
-    if product_key not in PRICE_MAP:
-        return jsonify({"error": "Invalid product."}), 400
+    if not price_id:
+        return jsonify({"error": "Missing priceId"}), 400
 
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
-            mode="subscription",
+            mode="payment",
             line_items=[{
-                "price": PRICE_MAP[product_key],
+                "price": price_id,
                 "quantity": 1,
             }],
-            subscription_data={
-                "trial_period_days": 30
-            },
-            success_url="https://yourdomain.com/success",
-            cancel_url="https://yourdomain.com/cancel"
+            success_url="https://17social.net/success",
+            cancel_url="https://17social.net/cancel"
         )
-        return jsonify({"url": session.url})
+        return jsonify({ "id": session.id })  # ✅ This is what your frontend expects
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({ "error": str(e) }), 500
 
+# Optional: Stripe webhook for post-payment logic
 @app.route("/webhook", methods=["POST"])
 def webhook():
     payload = request.data
@@ -49,11 +43,13 @@ def webhook():
     except Exception as e:
         return jsonify(success=False, error=str(e)), 400
 
-    # Handle successful subscription
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        print("✅ Subscription started:", session["id"])
-
-        # TODO: Fire webhook to GHL or Make.com here
+        print("✅ Payment complete — Session ID:", session["id"])
+        # TODO: You can fire webhook to GHL or internal logic here
 
     return jsonify(success=True)
+
+# ✅ Required for Railway to expose on port 8080
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
