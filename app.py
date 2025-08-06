@@ -1,37 +1,72 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import stripe
 import os
 
 app = Flask(__name__)
 
-# ✅ Set your secret key from Railway environment variables
+# ✅ CORS FIX: Allow frontend to talk to backend securely
+# TEMP: allow all during testing
+CORS(app)
+
+# 🔒 Later, restrict to only your frontend domains like this:
+# CORS(app, resources={r"/api/*": {"origins": [
+#     "https://yourdomain.com",
+#     "https://yourboltproject.bolt.fun"
+# ]}})
+
+# ✅ Stripe secret key from .env
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-# ✅ This is the correct endpoint your frontend and Bolt are calling
+# ✅ Price IDs — install + monthly per tier
+PRICE_MAP = {
+    "starter": {
+        "install": "price_1RsoObLzByxOBy7vZ7iAvQbw",
+        "monthly": "price_1RsuNNLzByxOBy7vZ4D6nL2F"
+    },
+    "growth": {
+        "install": "price_1RsoOcLzByxOBy7vrDsK4wH9",
+        "monthly": "price_1RsuNvLzByxOBy7v0NToM3S3"
+    },
+    "premium": {
+        "install": "price_1RsoOdLzByxOBy7vxpHt9FIx",
+        "monthly": "price_1RsuOALzByxOBy7v2pjtrd1D"
+    }
+}
+
+# ✅ API endpoint for Stripe Checkout
 @app.route("/api/create-checkout-session", methods=["POST"])
 def create_checkout_session():
     data = request.get_json()
-    price_id = data.get("priceId")
+    product = data.get("product")
 
-    if not price_id:
-        return jsonify({"error": "Missing priceId"}), 400
+    if product not in PRICE_MAP:
+        return jsonify({"error": "Invalid product tier."}), 400
 
     try:
         session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            mode="payment",
-            line_items=[{
-                "price": price_id,
-                "quantity": 1,
-            }],
+            mode="subscription",
+            line_items=[
+                {
+                    "price": PRICE_MAP[product]["install"],
+                    "quantity": 1,
+                },
+                {
+                    "price": PRICE_MAP[product]["monthly"],
+                    "quantity": 1,
+                }
+            ],
+            subscription_data={
+                "trial_period_days": 30
+            },
             success_url="https://17social.net/success",
             cancel_url="https://17social.net/cancel"
         )
-        return jsonify({ "id": session.id })  # ✅ This is what your frontend expects
+        return jsonify({ "id": session.id })
     except Exception as e:
         return jsonify({ "error": str(e) }), 500
 
-# Optional: Stripe webhook for post-payment logic
+# ✅ Optional webhook for post-checkout actions
 @app.route("/webhook", methods=["POST"])
 def webhook():
     payload = request.data
@@ -45,11 +80,12 @@ def webhook():
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
-        print("✅ Payment complete — Session ID:", session["id"])
-        # TODO: You can fire webhook to GHL or internal logic here
+        print("✅ Stripe Checkout Complete — Session ID:", session["id"])
+        # TODO: Call Make.com or trigger onboarding flow
 
     return jsonify(success=True)
 
-# ✅ Required for Railway to expose on port 8080
+# ✅ For Railway container to run correctly
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
+
