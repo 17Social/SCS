@@ -1,91 +1,72 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import stripe
 import os
+import stripe
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dotenv import load_dotenv
 
-app = Flask(__name__)
-
-# ✅ CORS FIX: Allow frontend to talk to backend securely
-# TEMP: allow all during testing
-CORS(app)
-
-# 🔒 Later, restrict to only your frontend domains like this:
-# CORS(app, resources={r"/api/*": {"origins": [
-#     "https://yourdomain.com",
-#     "https://yourboltproject.bolt.fun"
-# ]}})
-
-# ✅ Stripe secret key from .env
+load_dotenv()
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
-# ✅ Price IDs — install + monthly per tier
-PRICE_MAP = {
-    "starter": {
-        "install": "price_1RsoObLzByxOBy7vZ7iAvQbw",
-        "monthly": "price_1RsuNNLzByxOBy7vZ4D6nL2F"
-    },
-    "growth": {
-        "install": "price_1RsoOcLzByxOBy7vrDsK4wH9",
-        "monthly": "price_1RsuNvLzByxOBy7v0NToM3S3"
-    },
-    "premium": {
-        "install": "price_1RsoOdLzByxOBy7vxpHt9FIx",
-        "monthly": "price_1RsuOALzByxOBy7v2pjtrd1D"
-    }
+app = FastAPI()
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Lock this down to your Bolt domain for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Stripe price mappings
+SETUP_FEES = {
+    "starter": "price_1RsncmByxOBy7v4JrGXvUhw6",
+    "growth":  "price_1RsncOByxOBy7v4JnTkAaXXz",
+    "pro":     "price_1RsncVByxOBy7v4J6e1NStv9",
 }
 
-# ✅ API endpoint for Stripe Checkout
-@app.route("/api/create-checkout-session", methods=["POST"])
-def create_checkout_session():
-    data = request.get_json()
-    product = data.get("product")
+MONTHLY_FEES = {
+    "starter": "price_1RsncmByxOBy7v4JqGulD1bL",  # $400/mo after 30 days
+    "growth":  "price_1RsoOdLzByxOBy7v4JtSjrqN",  # $1000/mo after 30 days
+    "pro":     "price_1RsncYByxOBy7v4JdnyXYcXY",  # $600/mo after 30 days
+}
 
-    if product not in PRICE_MAP:
-        return jsonify({"error": "Invalid product tier."}), 400
+class CheckoutSessionRequest(BaseModel):
+    tier: str  # starter, growth, pro
+    email: str
 
+@app.post("/api/create-checkout-session")
+async def create_checkout_session(req: CheckoutSessionRequest):
     try:
+        tier = req.tier.lower()
+        customer_email = req.email
+
+        if tier not in SETUP_FEES or tier not in MONTHLY_FEES:
+            return {"error": "Invalid tier selected."}
+
         session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
             mode="subscription",
+            customer_email=customer_email,
             line_items=[
                 {
-                    "price": PRICE_MAP[product]["install"],
+                    "price": SETUP_FEES[tier],
                     "quantity": 1,
                 },
                 {
-                    "price": PRICE_MAP[product]["monthly"],
+                    "price": MONTHLY_FEES[tier],
                     "quantity": 1,
-                }
+                },
             ],
             subscription_data={
-                "trial_period_days": 30
+                "trial_period_days": 30,
             },
-            success_url="https://17social.net/success",
-            cancel_url="https://17social.net/cancel"
+            success_url="https://17social.net/checkout-success",
+            cancel_url="https://17social.net/checkout-cancelled",
         )
-        return jsonify({ "id": session.id })
+        return {"sessionId": session.id}
+
     except Exception as e:
-        return jsonify({ "error": str(e) }), 500
-
-# ✅ Optional webhook for post-checkout actions
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    payload = request.data
-    sig_header = request.headers.get("stripe-signature")
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
-    except Exception as e:
-        return jsonify(success=False, error=str(e)), 400
-
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        print("✅ Stripe Checkout Complete — Session ID:", session["id"])
-        # TODO: Call Make.com or trigger onboarding flow
-
-    return jsonify(success=True)
-
-# ✅ For Railway container to run correctly
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+        return {"error": str(e)}
 
